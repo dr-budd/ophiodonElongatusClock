@@ -25,7 +25,7 @@ Run times and memory usage allocations may need to be adjusted for other platfor
 
 ## :chart_with_upwards_trend: Data
 
-Raw sequence data are available in the CSIRO data access portal [link here]
+Raw sequence data are available in the CSIRO data access portal [link TBA]
 
 The metadata are in the folder `dataFiles`
 
