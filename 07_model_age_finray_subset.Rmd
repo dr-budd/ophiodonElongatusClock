@@ -1,0 +1,593 @@
+---
+title: "Lingcod epigenetic ageing v2 - FRS"
+subtitle: "Fin ray ages - subset for otolith aged samples only"
+author: "Alyssa"
+date: "`r Sys.Date()`"
+output:
+  html_notebook:
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+current_directory <- dirname(rstudioapi::getActiveDocumentContext()$path)
+knitr::opts_knit$set(root.dir=normalizePath(paste0(current_directory)))
+```
+
+```{r load_libraries, include=FALSE}
+# Load libraries 
+library(caret)
+library(glmnet)
+library(ggpubr)
+library(tidyverse)
+```
+
+```{r}
+# Methylation matrix
+methyl_data_unmod <- readRDS("dataFiles/06_methyl_data.rds")
+```
+
+```{r}
+# Find line number where [Data] section starts
+line_no <- grep("^\\[Data\\]", readLines("dataFiles/lingcod_sample_sheet_v1_21072025.csv"))
+
+# Read the table starting from the line after [Data]
+sample_sheet <- read.csv("dataFiles/lingcod_sample_sheet_v1_21072025.csv", skip = line_no, header = TRUE)
+
+print("Samples in sample sheet but not methylation matrix: ")
+setdiff(sample_sheet$Sample_Name, unique(methyl_data_unmod$sample))
+```
+
+```{r}
+# Failed sample_ids
+if (file.size("dataFiles/06_methyl_fails.txt") == 0) {
+  print("No failed samples")
+} else {
+  methyl_fails <- read.table("dataFiles/06_methyl_fails.txt")
+  failed_sample_ids <- sub("_.*", "", basename(methyl_fails$V1))
+  print("Failed sample_ids (no sequencing data):")
+  print(failed_sample_ids)
+}
+```
+
+```{r}
+# Import primer suite info
+primer_suite_info_unmod <- read.csv("dataFiles/ophiodon_elongatus_primer_suite_mab21l2.csv")
+
+primer_suite_info <- primer_suite_info_unmod %>%
+  separate(region, into = c("chr", "range"), sep = ":", remove = FALSE) %>%
+  separate(range, into = c("pos", "end_pos"), sep = "-", convert = TRUE)
+```
+
+```{r}
+min_cov_threshold = 999
+methyl_data_filtered <- methyl_data_unmod %>%
+  mutate(coverage = meth_count + unmeth_count) %>%
+  filter(coverage > min_cov_threshold)
+```
+
+```{r}
+# Metadata
+metadata_unmod <- read.csv("dataFiles/oelongatus_finray_ages.csv") 
+
+metadata <- metadata_unmod %>%  
+  rename_with(~ gsub("\\.\\.", ".", .) %>%     # Replace ".." with "."
+                gsub("\\.$", "", .) %>%        # Remove trailing "."
+                gsub("\\.", "_", .) %>%        # Replace remaining "." with "_"
+                tolower()) %>%
+  rename(age = fin_ray_age) %>%
+  filter(!is.na(age)) # Remove samples with unknown age
+```
+
+```{r}
+# Create coverage matrix
+coverage_matrix <- methyl_data_filtered %>%
+  select(site_id, sample, coverage) %>%
+  pivot_wider(names_from = sample, values_from = coverage, values_fill = NA) %>%
+  arrange(site_id) %>%
+  column_to_rownames(var="site_id") %>%
+  t(.)
+
+# Create methylation matrix
+methylation_matrix <- methyl_data_filtered %>%
+  select(site_id, sample, meth_pct) %>%
+  pivot_wider(names_from = sample, values_from = meth_pct, values_fill = NA) %>%
+  arrange(site_id) %>%
+  column_to_rownames(var="site_id") %>%
+  t(.)
+
+# # Export matrices
+# write.csv(coverage_matrix, "dataFiles/07_coverage_matrix.csv", row.names=FALSE)
+# write.csv(methylation_matrix, "dataFiles/07_methylation_matrix.csv", row.names=FALSE)
+```
+
+```{r fig.width=9, fig.height=12}
+# Create heatmap
+ggplot(coverage_matrix %>%
+         as.data.frame(.) %>%
+         # mutate(across(everything(), ~ replace_na(., 0))) %>%
+         rownames_to_column(var="sample") %>%
+         pivot_longer(-sample, names_to = "site_id", values_to = "methylation") ,
+       aes(x = site_id, y = sample, fill = methylation)) +
+  geom_tile() +
+  scale_fill_viridis_c(option = "D", na.value = "white") +  # Use a color scale
+  theme_minimal() +
+  labs(x = "CpG site", y = "Sample", fill = "Number of reads") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size=8),
+        axis.text.y = element_text(size=4))+
+  ggtitle(paste0("Coverage matrix (white cells indicate < ", min_cov_threshold, " reads)"))
+```
+
+Beautiful even coverage - and lots of it!
+
+```{r}
+print("~~~ Coverage stats ~~~")
+print(paste0("Minimum: ", min(methyl_data_filtered$coverage)))
+print(paste0("Maximum: ", max(methyl_data_filtered$coverage)))
+print(paste0("Mean: ", round(mean(methyl_data_filtered$coverage))))
+print(paste0("Median: ", median(methyl_data_filtered$coverage)))
+```
+
+```{r fig.width=9, fig.height=12}
+# Create heatmap
+ggplot(methylation_matrix %>%
+         as.data.frame(.) %>%
+         rownames_to_column(var="sample") %>%
+         pivot_longer(-sample, names_to = "site_id", values_to = "methylation") ,
+       aes(x = site_id, y = sample, fill = methylation)) +
+  geom_tile() +
+  scale_fill_viridis_c(option = "magma", na.value = "white") +  # Use a color scale
+  theme_minimal() +
+  labs(x = "CpG site", y = "Sample", fill = "% Methylation") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size=8),
+        axis.text.y = element_text(size=7))+
+  ggtitle("DNA methylation matrix")
+```
+
+### Samples
+
+```{r}
+x <- length(row.names(methylation_matrix))
+y <- length(metadata$sample_id)
+
+print(paste0("The filtered DNAm matrix contains data for ", x, " of the total ", y, " fish samples."))
+```
+
+```{r}
+print("Missing known-age samples: ")
+missing_known_age_samples <- setdiff(metadata$sample_id, row.names(methylation_matrix))
+missing_known_age_samples
+
+pd_missing <- metadata_unmod %>%
+  # filter(!is.na(Age)) %>%
+  mutate(data = ifelse(Sample.ID %in% missing_known_age_samples, 
+                       "NO DATA", 
+                       "Yes")) %>%
+  mutate(data = ifelse(Sample.ID == "", "Unknown", data))
+
+# write.csv(pd_missing, "dataFiles/oelongatus_finray_age_missing.csv", row.names=FALSE)
+```
+
+```{r}
+print("Sample size: ")
+ss <- intersect(metadata$sample_id, row.names(methylation_matrix))
+length(ss)
+```
+
+```{r}
+# Randomly subset for 60 samples
+# ss_sub <- sample(ss, size = 60, replace = FALSE)
+```
+
+```{r}
+# Get otolith ones specifically
+otolith_metadata_unmod <- read.csv("dataFiles/oelongatus_otolith_ages.csv") 
+
+otolith_metadata <- otolith_metadata_unmod %>%  
+  rename_with(~ gsub("\\.\\.", ".", .) %>%     # Replace ".." with "."
+                gsub("\\.$", "", .) %>%        # Remove trailing "."
+                gsub("\\.", "_", .) %>%        # Replace remaining "." with "_"
+                tolower()) %>%
+  rename(age = otolith_age) %>%
+  filter(!is.na(age)) # Remove samples with unknown age
+
+o_sub <- intersect(metadata$sample_id, otolith_metadata$sample_id)
+```
+
+```{r}
+# Subset metadata for otolith ages
+metadata <- metadata %>%
+  filter(sample_id %in% o_sub)
+```
+
+```{r}
+print("Updated sample size: ")
+ss <- intersect(metadata$sample_id, row.names(methylation_matrix))
+length(ss)
+```
+
+```{r}
+# Model age
+
+# Specify X and Y
+
+# Ensure samples in Y but not X are removed
+X <- as.data.frame(methylation_matrix) %>%
+  rownames_to_column(., var = "sample_id") %>%
+  filter(sample_id %in% metadata$sample_id) %>%
+  column_to_rownames(., var="sample_id") %>%
+  as.matrix(.)
+
+# Filter for samples in X
+Y <- metadata %>%
+  filter(sample_id %in% rownames(X))
+  
+# Ensure X and Y have matching row names
+Y <- Y %>%
+  # Reorder 
+  slice(match(rownames(X), sample_id))
+
+# Split data into training (70%) and testing (30%)
+set.seed(1234)
+train_index <- createDataPartition(y=Y$age, p = 0.7, list = FALSE)
+X_train <- X[train_index, ]
+X_test <- X[-train_index, ]
+Y_train <- Y[train_index, ]
+Y_test <- Y[-train_index, ]
+
+# Run cross-validated glmnet
+cv_fit <- cv.glmnet(X_train, log(Y_train$age), alpha = 0.5)
+
+# Run glmnet using lambda.min from cross-validation
+glmnet_fit <- glmnet(X_train, log(Y_train$age), alpha = 0.5, lambda = cv_fit$lambda.1se)
+
+# Predict on test set
+Y <- Y %>%
+  mutate(
+    split = ifelse(sample_id %in% sample_id[train_index], " Train", "Test"),
+    pred_age_log = as.numeric(predict(glmnet_fit, newx = X)),
+    pred_age = exp(pred_age_log)
+  ) %>%
+  group_by(split) %>%
+  mutate(rmse = sqrt(mean((age - pred_age)^2)),
+         abs_error = abs(age - pred_age)) %>%
+  ungroup()
+```
+
+```{r}
+# Determine axis limits
+axis_limits <- range(c(Y$age, Y$pred_age), na.rm = TRUE)
+
+# Correlation labels
+corr_labels <- Y %>%
+  group_by(split) %>%
+  summarise(cor = cor(age, pred_age), .groups = "drop") %>%
+  mutate(
+    label = paste0("r = ", round(cor, 2)),
+    x = axis_limits[1] + 0.05 * diff(axis_limits),
+    y = axis_limits[2] - 0.05 * diff(axis_limits)
+  )
+
+# Correlation plot
+cplot <- ggplot(Y, aes(x = age, y = pred_age)) +
+  geom_point(pch = 21, aes(fill = split), size = 2) +
+  geom_smooth(method = "lm", se = FALSE, linewidth = 0.8, colour = "black") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray") +
+  geom_text(data = corr_labels, aes(x = x, y = y, label = label),
+            inherit.aes = FALSE, check_overlap = TRUE, hjust = 0, size = 3.5) +
+  # scale_fill_brewer(palette = "Set1", direction = -1) +
+  scale_fill_manual(values=c("darkblue", "darkorange"))+
+  facet_wrap(~split) +
+  coord_cartesian(xlim = axis_limits, ylim = axis_limits) +
+  labs(x = "Fin ray age", y = "Epigenetic age") +
+  theme_bw() +
+  theme(strip.background = element_blank())
+
+# cplot
+```
+
+```{r}
+# MAE labels
+mae_labels <- Y %>%
+  group_by(split) %>%
+  summarise(mae = mean(abs_error), .groups = "drop") %>%
+  mutate(
+    label = paste0("MAE = ", round(mae, 2)),
+    y = max(Y$abs_error, na.rm = TRUE) * 0.95,
+    x = as.numeric(factor(split, levels = unique(Y$split)))
+  )
+
+# Absolute error plot
+bplot <- ggplot(Y, aes(x = split, y = abs_error, fill = split)) +
+  geom_boxplot(outlier.shape = NA, position = position_dodge(width = 0.8)) +
+  geom_jitter(aes(color = split),
+              position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.8),
+              alpha = 0.5, size = 1.5) +
+  geom_text(data = mae_labels, aes(x = x, y = y, label = label),
+            inherit.aes = FALSE, size = 3.5, vjust = 0) +
+  # scale_fill_brewer(palette = "Set1", direction = -1) +
+  # scale_color_brewer(palette = "Set1", direction = -1) +
+  scale_fill_manual(values=c("darkblue", "darkorange"))+
+  scale_colour_manual(values=c("darkblue", "darkorange"))+
+  labs(x = "Data split", y = "Absolute error (years)") +
+  theme_bw()
+
+# bplot
+```
+
+### Result
+
+```{r fig.width=9, fig.height=3.5, message=FALSE}
+ggarrange(cplot+theme(legend.position = "none"), 
+          bplot+theme(legend.position = "none")+ggtitle(""), 
+          ncol=2, widths=c(2,1))
+```
+
+*Note: A train/test split was used in this analysis to enable comparison with previous work. In future analyses, leave-one-out cross-validation (LOOCV) could easily be implemented to better align with common practices in the field.*
+
+### Modelled sites/amplicons
+
+```{r}
+modelled_sites <- as.matrix(coef(cv_fit, s=cv_fit$lambda.1se))
+modelled_sites <- as.matrix(modelled_sites[which(modelled_sites[,1] > 0 | modelled_sites[,1] < 0),])
+```
+
+```{r fig.width=9, fig.height=12}
+# Create heatmap
+ggplot(X %>%
+         as.data.frame(.) %>%
+         rownames_to_column(var="sample") %>%
+         pivot_longer(-sample, names_to = "site_id", values_to = "methylation") %>%
+         filter(site_id %in% row.names(modelled_sites)[-1]),
+       aes(x = site_id, y = sample, fill = methylation)) +
+  geom_tile() +
+  scale_fill_viridis_c(option = "magma", na.value = "white") +  # Use a color scale
+  theme_minimal() +
+  labs(x = "CpG site", y = "Sample", fill = "% Methylation") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size=8),
+        axis.text.y = element_text(size=7))+
+  ggtitle("Predictive DNAm matrix (CpG sites selected by model)")
+```
+
+```{r}
+# Amplicons that worked
+adequate_sites <- data.frame(location=colnames(methylation_matrix)) %>%
+  separate(location, into = c("chr", "range"), sep = ":", remove = FALSE) %>%
+  separate(range, into = c("pos", "end_pos"), sep = "-", convert = TRUE)
+
+# ID sites that shouldn't be there...
+adequate_amplicons <- fuzzyjoin::genome_join(primer_suite_info %>% select(chr, pos, end_pos, region), 
+                                       adequate_sites %>% select(chr, pos, end_pos), 
+                                       by=c("chr", "pos", "end_pos")) %>%
+  pull(region) %>%
+  unique(.)
+
+# Amplicons with data was used for modelling
+predictive_sites <- as.data.frame(modelled_sites) %>%
+  rownames_to_column(var="location") %>%
+  filter(location != "(Intercept)") %>%
+  separate(location, into = c("chr", "range"), sep = ":", remove = FALSE) %>%
+  separate(range, into = c("pos", "end_pos"), sep = "-", convert = TRUE)
+
+# ID sites that shouldn't be there...
+predictive_amplicons <- fuzzyjoin::genome_join(primer_suite_info %>% select(chr, pos, end_pos, region), 
+                                       predictive_sites %>% select(chr, pos, end_pos), 
+                                       by=c("chr", "pos", "end_pos")) %>%
+  pull(region) %>%
+  unique(.)
+
+x <- length(predictive_amplicons)
+y <- length(adequate_amplicons)
+
+n <- length(predictive_sites$location)
+p <- length(adequate_sites$location)
+
+print(paste0("To predict age, the model selected data from ", x, " amplicon (", n, " CpG sites) of the ", y, " total amplicons (", p, " CpG sites) that were adequately sequenced and modelled with elastic net"))
+```
+
+## Perform leave-one out cross validation (LOOCV) to replace test-train split
+
+```{r message=FALSE}
+# Model age
+
+cntxt <- "CpG"
+
+# Specify X and Y
+
+# Ensure samples in Y but not X are removed
+X <- as.data.frame(methylation_matrix) %>%
+  rownames_to_column(., var = "sample_id") %>%
+  filter(sample_id %in% metadata$sample_id) %>%
+  column_to_rownames(., var="sample_id") %>%
+  as.matrix(.)
+
+# Filter for samples in X
+Y <- metadata %>%
+  filter(sample_id %in% rownames(X)) %>%
+  # rename age
+  mutate(age_years = age)
+  
+# Ensure X and Y have matching row names
+Y <- Y %>%
+  # Reorder 
+  slice(match(rownames(X), sample_id))
+
+# Perform LOOCV (using all data - not filtering for significant correlations first) ----
+set.seed(1234)
+
+# Specify alpha (0.5 for elastic net)
+alpha_spec <- 0.5
+
+pheno_loocv <- NULL
+predictive_sites_loocv <- NULL
+
+for (i in 1:nrow(Y)) {
+  
+  # Split data into testing and training folds ----
+  
+  # Use the sample_id_index to subset the training data
+  Y_train <- Y[-i, ]
+  
+  # Use the inverse sample_id_index to subset the testing data
+  Y_test <- Y[i, ]
+  
+  # Split into test and train
+  X_train <- data.matrix(X[Y_train$sample_id, ])
+  X_test <- data.matrix(X[Y_test$sample_id, , drop = FALSE]) ##**
+  
+  # Perform inner cross validation to optimise lambda (training data only) ----
+  
+  # Cross validate alpha and lambda
+  cross_validation <- cv.glmnet(x=X_train, y=Y_train$age_years)
+  
+  # Get lambda 1se
+  lambda_1se <- cross_validation$lambda.1se
+  
+  # Build the model (training data only) ----
+  
+  # Fit a glm with elastic net regularization to the training data
+  model <- glmnet(X_train,
+                  Y_train$age_years, 
+                  family="gaussian",
+                  lambda=lambda_1se,
+                  alpha=alpha_spec)
+  
+  # Predict for training data (not used)
+  Y_train <- Y_train %>%
+    mutate(predicted_age_years = as.numeric(predict(model, 
+                                         X_train, 
+                                         type="response",
+                                         s=lambda_1se))) %>%
+    mutate(absolute_error = abs(age_years - predicted_age_years), 
+           data_split = "Training data")
+  
+  # Predict for test data (n=1)
+  Y_test <- Y_test %>%
+    mutate(predicted_age_years = as.numeric(predict(model, 
+                                         X_test, 
+                                         type="response",
+                                         s=lambda_1se))) %>%
+    mutate(absolute_error = abs(age_years - predicted_age_years), 
+           relative_error = absolute_error/age_years*100, 
+           data_split = "Test data")
+  
+  # Combine
+  pheno_loocv <- rbind(pheno_loocv, 
+                       (full_join(Y_train, Y_test) %>%
+                          mutate(iteration = i, # names(sample_id_indices[i]),
+                                 lambda = lambda_1se))%>%
+                         mutate(context = cntxt)) 
+  
+  # Extract the coefficients for the predictive sites
+  predictive_sites <- data.frame(as.matrix(coef(model, s=lambda_1se))) %>%
+    `colnames<-`("coefficient") %>%                # force a fixed name
+    filter(coefficient != 0) %>%
+    rownames_to_column(., var="id") %>%
+    ## remove intercept
+    filter(id != "(Intercept)") %>%
+    ## reformat locations
+    extract(id, into = c("seqid", "start", "end"),
+            regex = "^(.+?):(\\d+)-(\\d+)$",
+            remove = FALSE, convert = TRUE) %>%
+    ## add identifiers
+    mutate(cv_type = "LOOCV", 
+           iteration = i) %>%
+    mutate(context = toupper(cntxt))
+  
+  # Combine
+  predictive_sites_loocv <- rbind(predictive_sites_loocv,
+                                  predictive_sites) 
+  
+}
+```
+
+```{r}
+## predicted ~ observed plot
+loocv_test_results <- pheno_loocv %>%
+  filter(data_split == "Test data") %>%
+  group_by(context) %>%
+  mutate(mae = round(mean(absolute_error), digits = 2),
+         sd = round(sd(absolute_error), digits = 2),
+         label = paste0("MAE: ", mae, " (\u00B1 ", sd, ")")) %>%
+  mutate(mre = round(mean(relative_error), digits = 2),
+         sd = round(sd(relative_error), digits = 2),
+         labelr = paste0("MRE: ", mre, " (\u00B1 ", sd, ")")) %>%
+  ungroup()
+
+min_val <- min(c(loocv_test_results$age_years, loocv_test_results$predicted_age_years))
+max_val <- max(c(loocv_test_results$age_years, loocv_test_results$predicted_age_years))
+
+pc <- ggplot(loocv_test_results, aes(x=age_years, y=predicted_age_years))+
+  geom_point(alpha = 0.5) + 
+  geom_smooth(method = "lm") +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "grey")+
+  labs(x = "Fin ray age (years)", 
+       y = "Epigenetic age (years)") +
+  lims(x=c(min_val, max_val), y=c(min_val, max_val))+
+  # facet_grid(context~.)+
+  theme_bw()+
+  stat_cor(label.x.npc = "left", label.y.npc = "top", method = "pearson",
+           aes(label = paste(after_stat(r.label))))+
+  stat_regline_equation(label.x.npc = "left", label.y.npc = "top", vjust=4) +
+  theme(strip.background = element_blank())
+
+# pc
+```
+
+```{r}
+## absolute error plot
+ae <- ggplot(loocv_test_results, aes(x = age_years, y = absolute_error)) +
+  geom_point(alpha=0.5)+
+  geom_smooth(method = "lm", formula = y ~ poly(x, 2)) +
+  labs(x = "Fin ray age (years)",
+       y = "Absolute error (years)")+
+  scale_y_continuous(breaks = scales::pretty_breaks())+
+  ggpp::geom_text_npc(
+    aes(npcx = 0.05,   # ≈ “near the start of the x-axis”
+        npcy = 0.95,   # ≈ “near the top of the y-axis”
+        label = label),
+    hjust = 0, vjust = 1, check_overlap = TRUE)+
+  theme_bw()+
+  theme(strip.background = element_blank())
+
+# ae
+```
+
+```{r}
+## relative error plot
+re <- ggplot(loocv_test_results, aes(x = age_years, y = relative_error)) +
+  geom_point(alpha=0.5)+
+  geom_smooth(method = "lm", formula = y ~ poly(x, 2)) +
+  labs(x = "Fin ray age (years)",
+       y = "Relative error (%)")+
+  scale_y_continuous(breaks = scales::pretty_breaks())+
+  ggpp::geom_text_npc(
+    aes(npcx = 0.05,   # ≈ “near the start of the x-axis”
+        npcy = 0.95,   # ≈ “near the top of the y-axis”
+        label = labelr),
+    hjust = 0, vjust = 1, check_overlap = TRUE)+
+  theme_bw()+
+  theme(strip.background = element_blank())
+
+# re
+```
+
+```{r fig.width=10, fig.height=3.5, message=FALSE}
+combined <- ggarrange(pc, ae, re, nrow=1)
+combined
+
+saveRDS(combined, file = "figuresTables/combined_finray_subset.rds")
+```
+
+```{r}
+# Export data for comparisons
+metadata_preds <- pheno_loocv %>%
+  filter(data_split == "Test data") %>%
+  select(sample_id, sex, age, predicted_age_years) %>%
+  rename(fin_ray_age = age, 
+         epigenetic_age = predicted_age_years) %>%
+  mutate(epigenetic_age = round(epigenetic_age, digits=2))
+
+write.csv(metadata_preds, "dataFiles/oelongatus_epiage_finraySubset.csv", row.names=FALSE)
+
+write.csv(predictive_sites_loocv, "dataFiles/predsites_finraySubset", row.names=FALSE)
+```

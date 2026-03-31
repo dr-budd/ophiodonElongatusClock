@@ -1,0 +1,234 @@
+---
+title: "Lingcod - map primers"
+author: "Alyssa"
+date: "`r Sys.Date()`"
+output:
+  html_notebook:
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+current_directory <- dirname(rstudioapi::getActiveDocumentContext()$path)
+knitr::opts_knit$set(root.dir=normalizePath(paste0(current_directory)))
+```
+
+```{r load_libraries, include=FALSE}
+# Load libraries 
+library(tidyverse)
+library(Biostrings) 
+```
+
+#### Get O. elongatus MAB12L2 using D. rerio sequence<br>
+
+1) Go to NCBI [https://www.ncbi.nlm.nih.gov] and search "MAB21L2 Danio rerio"<br>
+2) In the 'Genomes' box click 'Nucleotide'<br>
+3) Select the top entry:<br>
+
+**Danio rerio Mab21L2 mRNA, complete cds**<br>
+1,562 bp linear mRNA<br>
+Accession: AY038031.1 GI: 17380591<br>
+Protein PubMed Taxonomy<br>
+GenBank FASTA Graphics <br>
+
+4) Use script `00_minimap.sh` to map to lingcod genome and create fasta file
+5) Import into R
+
+```{r}
+fasta_file <- "dataFiles/oelongatus_mab21l2.fasta"
+```
+
+```{r}
+# Define primers
+primers <- tibble::tribble(
+  ~name,         ~seq,                     ~type,
+  "Primer_F",   "tNgGGTGGtAGAAGTtAAAG",  "F",   # forward primer
+  "Primer_R",   "CCTaCAaCcNaCCATaAaCA",  "R"    # reverse primer (given 5'->3' of the primer)
+)
+
+# normalize column names + uppercase sequences
+primers <- primers %>%
+  mutate(seq = toupper(seq))
+```
+
+```{r}
+# Load target and make bisulfite-converted references
+ref <- readDNAStringSet(fasta_file)[[1]]
+ref <- DNAString(toupper(as.character(ref)))
+ref_len <- length(ref)
+ct_ref <- DNAString(chartr("C", "T", as.character(ref)))  # + strand after bisulfite
+ga_ref <- DNAString(chartr("G", "A", as.character(ref)))  # - strand equivalent
+
+cpg_hits <- matchPattern(DNAString("CG"), ref, fixed = TRUE)
+cpg_df <- tibble(pos = start(cpg_hits))
+```
+
+```{r}
+hits_list <- list(); k <- 1
+
+for (i in seq_len(nrow(primers))) {
+  p_name <- primers$name[i]
+  p_seq  <- primers$seq[i]
+  p_type <- primers$type[i]
+
+  if (p_type == "F") {
+    ps <- DNAString(p_seq)                           # forward as-is
+    ct_hits <- matchPattern(ps, ct_ref, fixed = FALSE)
+    if (length(ct_hits) > 0) {
+      hits_list[[k]] <- tibble(name=p_name, role="F",
+                               start=start(ct_hits), end=end(ct_hits), strand="+")
+      k <- k + 1
+    }
+  } else if (p_type == "R") {
+    ps <- reverseComplement(DNAString(p_seq))        # reverse primer RC'd
+    ct_hits <- matchPattern(ps, ct_ref, fixed = FALSE)
+    if (length(ct_hits) > 0) {
+      hits_list[[k]] <- tibble(name=p_name, role="R",
+                               start=start(ct_hits), end=end(ct_hits), strand="-")
+      k <- k + 1
+    }
+  } else {
+    stop("type must be 'F' or 'R'")
+  }
+}
+
+if (length(hits_list) == 0) stop("No CT-space matches found.")
+hits <- bind_rows(hits_list)
+
+# Report any primers with no hit
+nohit <- anti_join(primers, distinct(hits, name), by="name")
+if (nrow(nohit) > 0) message("No match for: ", paste(nohit$name, collapse=", "))
+```
+
+
+```{r fig.width=8.75, fig.height=2.5}
+# Enter BED file info (manual)
+CHR <- "JACSYO010001013.1"
+GENOMIC_START <- 93337   # 1-based genomic start position of base 1 of your FASTA
+
+# Compute amplicon bounds
+Fs <- hits |> dplyr::filter(role == "F")
+Rs <- hits |> dplyr::filter(role == "R")
+amp_start <- min(Fs$start)
+amp_end   <- max(Rs$end)
+
+# 1) CpGs on unconverted reference
+cpg_hits <- Biostrings::matchPattern(DNAString("CG"), ref, fixed = TRUE)
+cpg_df   <- tibble(pos = start(cpg_hits))
+
+# 2) Split CpGs by amplicon
+cpg_in  <- cpg_df %>% filter(pos >= amp_start, pos <= amp_end)
+cpg_out <- cpg_df %>% filter(pos < amp_start | pos > amp_end)
+
+# 3) Convert everything to genomic coordinates (no functions)
+amp_start_g <- GENOMIC_START + amp_start - 1
+amp_end_g   <- GENOMIC_START + amp_end   - 1
+backbone    <- tibble(y = 0,
+                      x1 = GENOMIC_START + 1 - 1,
+                      x2 = GENOMIC_START + ref_len - 1)
+
+cpg_in_g  <- cpg_in  %>% mutate(gpos = GENOMIC_START + pos - 1)
+cpg_out_g <- cpg_out %>% mutate(gpos = GENOMIC_START + pos - 1)
+
+# 4) Primers as bars (rectangles), positioned above (F) and below (R) the backbone
+#    Compute genomic starts/ends and bar vertical extents.
+primer_height <- 0.06
+hits_g <- hits %>%
+  mutate(gstart = GENOMIC_START + start - 1,
+         gend   = GENOMIC_START + end   - 1,
+         # ymin   = ifelse(role == "F", 0.12, -0.18),
+         ymin = -0.18,
+         ymax   = ymin + primer_height)
+
+# 5) Plot
+p <- ggplot() +
+  # Amplicon as grey box
+  annotate("rect",
+           xmin = amp_start_g, xmax = amp_end_g,
+           ymin = -0.08, ymax = 0.08,
+           fill = "grey80", color = NA) +
+  # CDS backbone
+  geom_segment(data = backbone,
+               aes(x = x1, xend = x2, y = y, yend = y),
+               linewidth = 1) +
+  # CpG ticks outside amplicon (subtle)
+  geom_segment(data = cpg_out_g,
+               aes(x = gpos, xend = gpos, y = -0.05, yend = 0.05),
+               linewidth = 0.25, alpha = 0.35) +
+  # CpG lollipops inside amplicon
+  geom_segment(data = cpg_in_g,
+               aes(x = gpos, xend = gpos, y = 0.08, yend = 0.22),
+               linewidth = 0.4) +
+  geom_point(data = cpg_in_g,
+             aes(x = gpos, y = 0.22),
+             size = 1.6) +
+  # Primer bars (rectangles; F above, R below)
+  geom_rect(data = hits_g,
+            aes(xmin = pmin(gstart, gend), xmax = pmax(gstart, gend),
+                ymin = ymin, ymax = ymax, fill = role),
+            color = NA, alpha = 0.9) +
+  # Primer labels
+  geom_text(data = hits_g,
+            aes(x = (gstart + gend)/2,
+                # y = ifelse(role == "F", ymax + 0.03, ymin - 0.03),
+                y = ymin - 0.03,
+                label = name, color = role),
+            size = 3, show.legend = FALSE) +
+  scale_fill_manual(values = c(F = "#1f77b4", R = "#d62728"), name = "Primer") +
+  scale_color_manual(values = c(F = "#1f77b4", R = "#d62728")) +
+  labs(
+    title = "Primers and CpG context on predicted O. elongatus mab21l2",
+    subtitle = paste0(CHR, ":", format(amp_start_g, big.mark=","), "–", format(amp_end_g, big.mark=",")),
+    x = paste0("Genomic position (", CHR, ")"),
+    y = NULL,
+    caption = paste0("Amplicon length ≈ ", amp_end - amp_start + 1, " bp; CpGs inside amplicon = ", nrow(cpg_in_g))
+  ) +
+  theme_bw(base_size = 12) +
+  theme(
+    axis.text.y = element_blank(), axis.ticks.y = element_blank(),
+    panel.grid.major.y = element_blank(), panel.grid.minor.y = element_blank(),
+    plot.title = element_text(hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5),
+    legend.position = "none"
+  ) +
+  coord_cartesian(xlim = c(backbone$x1, backbone$x2),
+                  ylim = c(-0.35, 0.35),
+                  expand = FALSE)+
+  scale_x_continuous(breaks = scales::breaks_pretty(n = 12))
+
+print(p)
+
+# ggsave("oelongatus_mab21l2_amplicon.png", p, width = 8.75, height = 2.5, dpi = 300)
+```
+
+```{r}
+# Get table
+
+# --- CpGs on original reference ---
+cpg_hits <- Biostrings::matchPattern(Biostrings::DNAString("CG"), ref, fixed=TRUE)
+cpg_df <- tibble(start = start(cpg_hits),
+                 end   = end(cpg_hits))
+
+# --- Convert CpG positions to genomic coordinates ---
+cpg_df <- cpg_df %>%
+  mutate(chr = CHR,
+         gstart = GENOMIC_START + start - 1,
+         gend   = GENOMIC_START + end   - 1)
+
+# --- Get primer spans in genomic coordinates ---
+primers_g <- hits %>%
+  mutate(gstart = GENOMIC_START + start - 1,
+         gend   = GENOMIC_START + end   - 1)
+
+# --- Filter CpGs that fall within any primer span ---
+target_cpgs <- cpg_df %>%
+  rowwise() %>%
+  filter(any(gstart >= min(primers_g$gstart) & gend <= max(primers_g$gend)))
+
+# --- Number the CpGs ---
+target_cpgs <- target_cpgs %>%
+  rowid_to_column(., var="site") %>%
+  select(chr, start=gstart, end=gend, site)
+
+target_cpgs
+```
+

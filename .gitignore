@@ -1,0 +1,19 @@
+### R ###
+# History files
+.Rhistory
+.Rapp.history
+
+# Session Data files
+.RData
+
+# User-specific files
+.Ruserdata
+
+### mac OS ###
+.DS_Store
+
+### Other ###
+figuresTables/
+*.html
+05-methylationCalls
+

@@ -1,0 +1,99 @@
+---
+title: "Lingcod epigenetic ageing v2"
+subtitle: "Figures"
+author: "Alyssa"
+date: "`r Sys.Date()`"
+output:
+  html_notebook:
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+current_directory <- dirname(rstudioapi::getActiveDocumentContext()$path)
+knitr::opts_knit$set(root.dir=normalizePath(paste0(current_directory)))
+```
+
+```{r load_libraries, include=FALSE}
+# Load libraries 
+library(ggpubr)
+library(tidyverse)
+```
+
+```{r}
+# Import plots
+combined_otolith <- readRDS(file = "figuresTables/combined_otolith.rds")
+combined_finray <- readRDS(file = "figuresTables/combined_finray.rds")
+combined_finray_subset <- readRDS(file = "figuresTables/combined_finray_subset.rds")
+```
+
+```{r fig.width=8.75, fig.height=9, message=FALSE}
+# Main text
+ggarrange(combined_otolith, 
+          combined_finray,
+          combined_finray_subset,
+          labels=c("A", "B", "C"), 
+          nrow=3)
+
+ggsave("figuresTables/otolith_vs_finray.png", width=8.75, height=9)
+```
+```{r fig.width=10, message=FALSE}
+# # Supp
+# ggarrange(combined_otolith, 
+#           combined_finray_subset,
+#           labels=c("A", "B", "C"), 
+#           nrow=2)
+# 
+# ggsave("figuresTables/otolith_vs_finraySubset.png", width=10, height=7)
+```
+
+```{r}
+predictive_sites_loocv_otolith <- read.csv("dataFiles/predsites_otolith") %>% mutate(type = "Otolith")
+predictive_sites_loocv_finray <- read.csv("dataFiles/predsites_finray") %>% mutate(type = "Fin ray")
+predictive_sites_loocv_finraySubset <- read.csv("dataFiles/predsites_finraySubset") %>% mutate(type = "Fin ray subset")
+
+predictive_sites_loocv <- full_join(predictive_sites_loocv_otolith, predictive_sites_loocv_finray) %>%
+  full_join(., predictive_sites_loocv_finraySubset)
+```
+
+```{r}
+## distribution of predictive sites
+predictive_sites_avg_coefs <- predictive_sites_loocv %>%
+  group_by(id, seqid, start, end, cv_type, context, type) %>%
+  summarise(mean_coef = mean(coefficient)) %>%
+  ## arrange by 
+  arrange(mean_coef) %>%
+  mutate(id_f = fct_inorder(factor(id))) %>%
+  group_by(context, type) %>%
+  mutate(n_unique_ids = n_distinct(id)) 
+
+predictive_sites_num_modelled <- predictive_sites_loocv %>%
+  group_by(iteration, context, type) %>%
+  mutate(n_sites_in_model = n_distinct(id)) %>%
+  ## add number of model iterations each site was selected in
+  group_by(id, type) %>%
+  mutate(n_models_selecting_site = n_distinct(iteration))
+```
+
+```{r fig.height=8, fig.width=8.25}
+# Optional: order ids by genomic position
+predictive_sites_loocv <- predictive_sites_loocv %>%
+  mutate(id_f = factor(id, levels = unique(id)))
+
+ggplot(predictive_sites_loocv,
+       aes(x = id_f, y = iteration, fill = coefficient)) +
+  geom_tile() +
+  facet_wrap(~ type, ncol = 1, strip.position = "right", scales = "free_y") +
+  # scale_fill_viridis_c(name="Modelled\ncoefficient")+
+  labs(x = "CpG site (id)",
+       y = "LOOCV iteration",
+       fill = "Modelled\ncoefficient") +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 70, hjust = 1, vjust = 1),
+    panel.grid = element_blank(),
+    strip.background = element_rect(fill = "grey90")
+  )
+
+ggsave("figuresTables/coefficients.png", width=10, height=7)
+```
+
