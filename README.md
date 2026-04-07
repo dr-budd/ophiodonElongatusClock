@@ -25,7 +25,7 @@ Run times and memory usage allocations may need to be adjusted for other platfor
 
 ## :chart_with_upwards_trend: Data
 
-Raw sequence data are available for download from the CSIRO data access portal at [https://doi.org/10.25919/0cfh-e668](https://doi.org/10.25919/0cfh-e668)
+Raw sequence data are available for download from the CSIRO data access portal at [doi.org/10.25919/0cfh-e668](https://doi.org/10.25919/0cfh-e668)
 
 The metadata are available under "Supporting Files" in the link above, as well as in this repo in the folder `dataFiles`
 
