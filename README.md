@@ -12,22 +12,22 @@
 <!-- > Lam, L.S., **Budd, A.M.**, Anderson C., Helser, T.E., Berry, O., Jarman, S., Benson, I.M., Hsieh, B., Longo, G.C., McNeel, K.W., Basnett, B., Hamilton, S.L., Samhouri, J.F. & Nichols, K.M., Comparing two model-based age prediction methods, DNA methylation and FT-NIR spectroscopy, for a temperate marine fish. **[Journal Name]**. -->
 <!-- > [doi](doi) -->
 
-TBA
+Lam, L.S., et al. (In prep.) Comparing two model-based age prediction methods, DNA methylation and FT-NIR spectroscopy, for a temperate marine fish.
 
 ---
 
 ## :file_folder: Notes
 
-These scripts were designed for the Pawsey Supercomputing Centre which using a slurm batch-queue system. 
+These scripts were designed for the Pawsey Supercomputing Centre which uses a slurm batch-queue system. 
 The scripts use Singularity containers to manage software dependencies and file paths specific to my Pawsey allocation. 
 Users on other systems will need to adjust container paths, file paths and module commands with their systems equivalents. 
 Run times and memory usage allocations may need to be adjusted for other platforms.
 
 ## :chart_with_upwards_trend: Data
 
-Raw sequence data are available in the CSIRO data access portal [link TBA]
+Raw sequence data are available for download from the CSIRO data access portal at [https://doi.org/10.25919/0cfh-e668](https://doi.org/10.25919/0cfh-e668)
 
-The metadata are in the folder `dataFiles`
+The metadata are available under "Supporting Files" in the link above, as well as in this repo in the folder `dataFiles`
 
 ## :woman_technologist: Author
 
