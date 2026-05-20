@@ -10,11 +10,6 @@ output:
 
 ### Summary
 
-<!-- To do:   -->
-<!-- - ask Chloe what S1, S2, S3 are and missing samples (pd_lingcod_missing)  - see sample sheet 1st? -->
-<!-- - Ask what Laurel needs (just a df of predicted ages?)   -->
-<!-- - write methods/intro/discussion :)  -->
-
 The lingcod data have been reproduced using a single primer pair targeting the predicted *O. elongatus* MAB21L2 gene. 
 Sample size has increased from 97 (previous data) to 182.
 
